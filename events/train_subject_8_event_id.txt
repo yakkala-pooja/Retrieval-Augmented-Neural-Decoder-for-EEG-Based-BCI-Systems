@@ -1,0 +1,4 @@
+feet: 1
+left_hand: 2
+rest: 3
+right_hand: 4
