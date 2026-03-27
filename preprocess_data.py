@@ -187,24 +187,21 @@ def load_events_for_subject(events_dir, subject_id, split='train'):
         split (str): Either 'train' or 'test'
         
     Returns:
-        np.array: Array of event timestamps
+        tuple: (timestamps, labels) where labels are converted from 1-4 to 0-3
     """
     events_file = Path(events_dir) / f"{split}_subject_{subject_id}_events.npy"
     if not events_file.exists():
         raise FileNotFoundError(f"Events file not found: {events_file}")
-    return np.load(events_file)
+    
+    # Load NPY file - format is [timestamp, previous_event_id, event_id]
+    events_array = np.load(events_file)
+    
+    # Return timestamps and event IDs (converting from 1-4 to 0-3)
+    return events_array[:, 0], events_array[:, 2] - 1  # Use column 2 for event_id, convert to 0-3 range
 
 def process_chunk_with_memory_efficiency(chunk_data, chunk_events, fs):
     """
     Process a single chunk of data with memory efficiency.
-    
-    Args:
-        chunk_data (np.array): EEG data chunk
-        chunk_events (np.array): Events in this chunk
-        fs (float): Sampling frequency
-        
-    Returns:
-        np.array: Processed chunk data
     """
     try:
         # Convert data to float32 to save memory
@@ -225,11 +222,11 @@ def process_chunk_with_memory_efficiency(chunk_data, chunk_events, fs):
         del downsampled_data
         gc.collect()
         
-        if epoched_data.size == 0:  # No valid epochs in this chunk
+        if epoched_data.size == 0:
             return None
         
         # 4. Extract power features with memory efficiency
-        power_features = extract_power_features_memory_efficient(epoched_data, chunk_size=10)
+        power_features = extract_power_features_memory_efficient(epoched_data, chunk_size=5)  # Reduce chunk size
         del epoched_data
         gc.collect()
         
@@ -238,7 +235,7 @@ def process_chunk_with_memory_efficiency(chunk_data, chunk_events, fs):
         del power_features
         gc.collect()
         
-        return scaled_features.astype(np.float32)  # Return as float32 to save memory
+        return scaled_features.astype(np.float32)  # Return as float32
         
     except Exception as e:
         print(f"Error in process_chunk_with_memory_efficiency: {str(e)}")
@@ -250,107 +247,136 @@ def process_edf_in_chunks(edf_file, events, chunk_size=1000, overlap=100, output
     
     Args:
         edf_file (str): Path to the EDF file
-        events (np.array): Event timestamps for this file
+        events (tuple): Tuple of (timestamps, labels)
         chunk_size (int): Number of samples per chunk (reduced for memory efficiency)
         overlap (int): Number of samples to overlap between chunks
         output_file (str): Path to save processed data (optional)
     """
-    # Load EDF file using MNE
-    raw = mne.io.read_raw_edf(edf_file, preload=False)
-    
-    # Get file parameters
-    n_channels = len(raw.ch_names)
-    n_samples = raw.n_times
-    fs = raw.info['sfreq']
-    
-    # Calculate epoch size in samples (2 seconds total: -0.5 to 1.5)
-    epoch_samples = int(2.0 * 500)  # 2 seconds at 500Hz after downsampling
-    
-    # Calculate number of chunks
-    n_chunks = int(np.ceil(n_samples / (chunk_size - overlap)))
-    
-    # Initialize output storage
-    if output_file:
-        h5f = h5py.File(output_file, 'w')
-        # Initialize with epoch size instead of chunk size
-        processed_data = h5f.create_dataset('processed_data', 
-                                          shape=(0, n_channels, epoch_samples),
-                                          maxshape=(None, n_channels, epoch_samples),
-                                          chunks=(1, n_channels, epoch_samples),  # Optimize chunk size
-                                          compression='gzip',  # Add compression
-                                          compression_opts=1,  # Light compression
-                                          dtype='float32')  # Use float32 instead of float64
+    try:
+        # Load EDF file using MNE
+        raw = mne.io.read_raw_edf(edf_file, preload=False)
         
-        # Add metadata
-        h5f.attrs['sampling_rate'] = 500  # Store downsampled rate
-        h5f.attrs['original_sampling_rate'] = fs
-        h5f.attrs['n_channels'] = n_channels
-        h5f.attrs['epoch_duration'] = 2.0  # seconds
-    else:
-        processed_chunks = []
-    
-    # Process each chunk
-    for i in tqdm(range(n_chunks), desc=f"Processing {Path(edf_file).stem}"):
-        try:
-            # Calculate chunk boundaries
-            start = i * (chunk_size - overlap)
-            end = min(start + chunk_size, n_samples)
+        # Get file parameters
+        n_channels = len(raw.ch_names)
+        n_samples = raw.n_times
+        fs = raw.info['sfreq']
+        
+        # Calculate epoch size in samples (2 seconds total: -0.5 to 1.5)
+        epoch_samples = int(2.0 * 500)  # 2 seconds at 500Hz after downsampling
+        
+        # Calculate number of chunks
+        n_chunks = int(np.ceil(n_samples / (chunk_size - overlap)))
+        
+        # Initialize output storage
+        if output_file:
+            h5f = h5py.File(output_file, 'w')
+            # Initialize with epoch size instead of chunk size
+            processed_data = h5f.create_dataset('processed_data', 
+                                              shape=(0, n_channels, epoch_samples),
+                                              maxshape=(None, n_channels, epoch_samples),
+                                              chunks=(1, n_channels, epoch_samples),  # Optimize chunk size
+                                              compression='gzip',  # Add compression
+                                              compression_opts=1,  # Light compression
+                                              dtype='float32')  # Use float32 instead of float64
             
-            # Load chunk data
-            chunk_data = raw.get_data(start=start, stop=end)
-            
-            # Find events that fall within this chunk
-            # Add padding to ensure we don't miss events near chunk boundaries
-            padded_start = max(0, start - int(0.5 * fs))  # Add 0.5s padding
-            padded_end = min(n_samples, end + int(0.5 * fs))  # Add 0.5s padding
-            chunk_events = events[(events >= padded_start) & (events < padded_end)]
-            
-            # Adjust event timestamps to be relative to chunk start
-            chunk_events = chunk_events - start
-            
-            if len(chunk_events) > 0:  # Only process chunks with events
-                # Process the chunk with memory efficiency
-                processed_chunk = process_chunk_with_memory_efficiency(chunk_data, chunk_events, fs)
+            # Add metadata
+            h5f.attrs['sampling_rate'] = 500  # Store downsampled rate
+            h5f.attrs['original_sampling_rate'] = fs
+            h5f.attrs['n_channels'] = n_channels
+            h5f.attrs['epoch_duration'] = 2.0  # seconds
+        else:
+            processed_chunks = []
+        
+        # Get event timestamps
+        event_times = events[0]  # First element contains timestamps
+        
+        # Process each chunk
+        for i in tqdm(range(n_chunks), desc=f"Processing {Path(edf_file).stem}"):
+            try:
+                # Calculate chunk boundaries
+                start = i * (chunk_size - overlap)
+                end = min(start + chunk_size, n_samples)
                 
-                if processed_chunk is not None:
-                    if output_file:
-                        # Resize dataset and append new data
-                        current_size = processed_data.shape[0]
-                        new_size = current_size + processed_chunk.shape[0]
-                        processed_data.resize(new_size, axis=0)
-                        processed_data[current_size:new_size] = processed_chunk
+                # Add padding to ensure we don't miss events near chunk boundaries
+                padded_start = max(0, start - int(0.5 * fs))  # Add 0.5s padding
+                padded_end = min(n_samples, end + int(0.5 * fs))  # Add 0.5s padding
+                
+                # Find events that fall within this chunk's padded region
+                chunk_mask = (event_times >= padded_start) & (event_times < padded_end)
+                chunk_events = event_times[chunk_mask]
+                
+                if len(chunk_events) > 0:  # Only process chunks with events
+                    # Load data in channel chunks to reduce memory usage
+                    channel_chunk_size = 20  # Process 20 channels at a time
+                    chunk_data = np.zeros((n_channels, padded_end - padded_start), dtype=np.float32)
+                    
+                    for ch_start in range(0, n_channels, channel_chunk_size):
+                        ch_end = min(ch_start + channel_chunk_size, n_channels)
+                        ch_picks = list(range(ch_start, ch_end))
                         
-                        # Flush to disk periodically
-                        if i % 10 == 0:
-                            h5f.flush()
-                    else:
-                        processed_chunks.append(processed_chunk)
+                        # Load this subset of channels and convert to float32
+                        channel_data = raw.get_data(picks=ch_picks, 
+                                                  start=padded_start, 
+                                                  stop=padded_end)
+                        chunk_data[ch_start:ch_end] = channel_data.astype(np.float32)
+                        del channel_data
+                        gc.collect()
+                    
+                    # Adjust event timestamps to be relative to chunk start
+                    chunk_events_adj = chunk_events - padded_start
+                    
+                    # Process the chunk with memory efficiency
+                    processed_chunk = process_chunk_with_memory_efficiency(chunk_data, chunk_events_adj, fs)
+                    
+                    if processed_chunk is not None:
+                        if output_file:
+                            # Resize dataset and append new data
+                            current_size = processed_data.shape[0]
+                            new_size = current_size + processed_chunk.shape[0]
+                            processed_data.resize(new_size, axis=0)
+                            processed_data[current_size:new_size] = processed_chunk
+                            
+                            # Flush to disk periodically
+                            if i % 10 == 0:
+                                h5f.flush()
+                        else:
+                            processed_chunks.append(processed_chunk)
+                    
+                    # Force garbage collection
+                    del processed_chunk, chunk_data
+                    gc.collect()
                 
-                # Force garbage collection
-                del processed_chunk
+            except Exception as e:
+                print(f"Error processing chunk {i}: {str(e)}")
+                continue
+        
+        if output_file:
+            # Store final metadata
+            h5f.attrs['n_epochs'] = processed_data.shape[0]
+            h5f.attrs['n_events'] = len(event_times)
+            h5f.close()
+            return None
+        else:
+            # Combine all processed chunks
+            if processed_chunks:
+                combined = np.concatenate(processed_chunks, axis=0)
+                del processed_chunks
                 gc.collect()
+                return combined
+            return None
             
-            # Clean up chunk data
-            del chunk_data
-            gc.collect()
-            
-        except Exception as e:
-            print(f"Error processing chunk {i}: {str(e)}")
-            continue
+    except Exception as e:
+        print(f"Error processing file: {str(e)}")
+        if 'h5f' in locals():
+            h5f.close()
+        if 'raw' in locals():
+            raw.close()
+        return None
     
-    if output_file:
-        # Store final metadata
-        h5f.attrs['n_epochs'] = processed_data.shape[0]
-        h5f.close()
-        return None
-    else:
-        # Combine all processed chunks
-        if processed_chunks:
-            combined = np.concatenate(processed_chunks, axis=0)
-            del processed_chunks
-            gc.collect()
-            return combined
-        return None
+    finally:
+        if 'raw' in locals():
+            raw.close()
+        gc.collect()
 
 def verify_processed_file(file_path):
     """

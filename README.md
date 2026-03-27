@@ -1,6 +1,6 @@
-# Retrieval-Augmented Neural Decoder for EEG-Based BCI Systems
+# EEG Classification Model
 
-This project implements a neural decoder for EEG-based Brain-Computer Interface (BCI) systems, focusing on high-gamma band activity processing and feature extraction.
+This repository contains code for training and evaluating a deep learning model for EEG signal classification. The model is designed to work with the Schirrmeister2017 dataset and focuses on high-gamma band (70-150 Hz) activity.
 
 ## Project Structure
 
@@ -10,59 +10,57 @@ This project implements a neural decoder for EEG-based Brain-Computer Interface 
 │   └── MNE-schirrmeister2017-data/
 │       ├── train/          # Training EDF files
 │       └── test/           # Test EDF files
-├── events/                 # Event marker files
-│   ├── train_subject_*_events.npy
-│   └── test_subject_*_events.npy
 ├── data/
-│   └── processed/         # Processed data output
-│       ├── train_subject_*_processed.h5
-│       └── test_subject_*_processed.h5
-├── preprocess_data.py     # Main preprocessing script
-└── requirements.txt       # Python dependencies
+│   └── processed/          # Preprocessed data in .h5 format
+├── eeg_model/
+│   ├── model.py           # Model architecture definition
+│   ├── train.py           # Training script
+│   └── evaluate.py        # Evaluation script
+├── events/                # Event files (.npy)
+├── outputs/               # Model outputs and results
+└── preprocess_data.py     # Data preprocessing script
 ```
+
+## Model Architecture
+
+The model consists of the following components:
+
+1. **Temporal Convolution Layers**
+   - Detect temporal patterns in EEG channels
+   - Multiple layers with increasing filter sizes
+   - Batch normalization for training stability
+   - Max pooling for dimensionality reduction
+
+2. **Dense Layers**
+   - Capture abstract patterns
+   - Dropout for regularization
+   - ReLU activation
+
+3. **Output Layer**
+   - Softmax activation for class probabilities
+   - Multi-class classification
 
 ## Data Processing Pipeline
 
-The preprocessing pipeline includes the following steps:
+1. **Preprocessing**
+   - Bandpass filtering (70-150 Hz) for high-gamma range
+   - Downsampling to 500 Hz
+   - Epoching (-0.5 to 1.5s around events)
+   - Power feature extraction using Hilbert transform
+   - Feature scaling/standardization
 
-1. **Bandpass Filtering (70-150 Hz)**
-   - Isolates high-gamma range relevant for motor/cognitive activity
-   - Uses Butterworth filter implementation
-
-2. **Downsampling (to 500 Hz)**
-   - Reduces data size while maintaining high-gamma information
-   - Satisfies Nyquist criterion for 150 Hz signals
-
-3. **Epoching (Event-Based Segmentation)**
-   - Time window: -0.5 to +1.5 seconds around events
-   - Aligns data with cognitive states/actions
-
-4. **Feature Extraction**
-   - Log power features via Hilbert transform
-   - Extracts amplitude envelopes
-   - Memory-efficient implementation
-
-5. **Feature Scaling**
-   - Standardization across time/trials/channels
-   - Stabilizes training and prevents bias
-
-## Requirements
-
-```
-numpy>=1.20.0
-scipy>=1.7.0
-scikit-learn>=0.24.0
-mne>=0.24.0
-h5py>=3.0.0
-tqdm>=4.0.0
-```
+2. **Memory Optimizations**
+   - Chunk-based processing
+   - float32 precision
+   - Efficient Hilbert transform implementation
+   - Garbage collection
 
 ## Installation
 
 1. Clone the repository:
 ```bash
 git clone [repository-url]
-cd Retrieval-Augmented-Neural-Decoder
+cd [repository-name]
 ```
 
 2. Install dependencies:
@@ -72,49 +70,75 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Data Preprocessing
-
-Run the preprocessing script to process both training and test data:
+### 1. Data Preprocessing
 
 ```bash
-python preprocess_data.py
+python preprocess_data.py --data_dir mne_data/MNE-schirrmeister2017-data --output_dir data/processed
 ```
 
-The script will:
-1. Process training data first
-2. Then process test data
-3. Save processed files in `data/processed/`
+### 2. Training
 
-### Output Format
+```bash
+python eeg_model/train.py \
+    --data_dir data/processed \
+    --train_subjects 1 2 3 4 5 6 7 8 9 10 11 12 13 14 \
+    --output_dir outputs \
+    --epochs 100 \
+    --batch_size 32
+```
 
-Processed data is saved in HDF5 format with the following structure:
+### 3. Evaluation
 
-- Training files: `data/processed/train_subject_X_processed.h5`
-- Test files: `data/processed/test_subject_X_processed.h5`
+```bash
+python eeg_model/evaluate.py \
+    --data_dir data/processed \
+    --test_subjects 15 16 17 18 19 20 \
+    --model_checkpoint outputs/model_checkpoint.pt \
+    --output_dir outputs
+```
 
-Each H5 file contains:
-- Dataset: 'processed_data' - shape (epochs, channels, time_points)
-- Attributes:
-  - sampling_rate: 500 Hz
-  - original_sampling_rate: Original EEG sampling rate
-  - n_channels: Number of EEG channels
-  - epoch_duration: 2.0 seconds
-  - n_epochs: Total number of epochs
+## Training Strategy
 
-## Memory Optimization
+- **Loss Function**: Cross-entropy loss (log-softmax + NLL)
+- **Optimizer**: Adam with learning rate 0.001
+- **Batch Size**: 32 (configurable)
+- **Epochs**: 100 (configurable)
+- **Validation Split**: 20% of training data
 
-The preprocessing pipeline includes several memory optimization features:
-- Chunk-based processing for large files
-- Memory-efficient Hilbert transform
-- Aggressive garbage collection
-- Float32 data type usage
-- Compressed HDF5 storage
+## Evaluation Metrics
 
-## Data Sources
+- **Accuracy**: Overall classification accuracy
+- **F1 Score**: Weighted average F1 score
+- **Confusion Matrix**: Per-class performance visualization
+- **Learning Curves**: Training/validation loss and accuracy plots
 
-The project uses the Schirrmeister2017 dataset:
-- Training data: 14 subjects
-- Test data: 14 subjects
-- Each subject's data includes:
-  - EDF files containing raw EEG recordings
-  - Event files marking significant time points
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- MNE-Python for EEG processing tools
+- Schirrmeister et al. for the original dataset
+- PyTorch team for the deep learning framework
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@article{schirrmeister2017deep,
+  title={Deep learning with convolutional neural networks for EEG decoding and visualization},
+  author={Schirrmeister, Robin Tibor and Springenberg, Jost Tobias and Fiederer, Lukas Dominique Josef and Glasstetter, Martin and Eggensperger, Katharina and Tangermann, Michael and Hutter, Frank and Burgard, Wolfram and Ball, Tonio},
+  journal={Human brain mapping},
+  volume={38},
+  number={11},
+  pages={5391--5420},
+  year={2017},
+  publisher={Wiley Online Library}
+}
+```
